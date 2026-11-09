@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+secrets/
+run/
+data/
+backups/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+server-config/
+**/.local-data/

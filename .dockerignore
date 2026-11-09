@@ -1,0 +1,10 @@
+.git
+.env*
+secrets
+run
+data
+backups
+**/__pycache__
+**/.venv
+server-config
+**/.local-data/

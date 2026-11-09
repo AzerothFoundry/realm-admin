@@ -1,0 +1,42 @@
+# Linux host-network example; attach to an existing vMaNGOS deployment.
+services:
+  control:
+    build: ./control
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
+    environment:
+      CONTROL_SOCKET: /run/wow-gm/control.sock
+      WOW_CONFIG: /etc/vmangos/mangosd.conf
+      SOAP_CREDENTIALS: /run/secrets/soap.json
+      CONFIG_BACKUPS: /var/lib/realm-admin/config-backups
+      WORLD_HOST: 127.0.0.1
+      WORLD_PORT: '8085'
+      WEB_UID: '10001'
+    volumes:
+      - ./run/control:/run/wow-gm
+      - ./server-config:/etc/vmangos
+      - ./backups:/var/lib/realm-admin/config-backups
+      - ./secrets/soap.json:/run/secrets/soap.json:ro
+  web:
+    build: ./web
+    network_mode: host
+    restart: unless-stopped
+    env_file: .env
+    depends_on: [control]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    volumes:
+      - ./run/control:/run/wow-gm:ro
+    # Override image default so this host-network example binds loopback only.
+    command: [uvicorn, 'wowgm.app:app', --host, '127.0.0.1', --port, '18086', --workers, '1', --no-access-log]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18086/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 4

@@ -45,6 +45,9 @@ class GameDB:
         with self.connection() as db, db.cursor() as c:
             c.execute(sql, tuple(params))
             return c.rowcount == 1
+    def global_gmlevel(self,account_id):
+        row=self.one("SELECT COALESCE(MAX(gmlevel),0) AS gmlevel FROM realmd.account_access WHERE id=%s AND RealmID=-1",(account_id,))
+        return int(row['gmlevel'])
     def accounts(self, query=""):
         with self.connection() as db, db.cursor() as c:
             c.execute(f"SELECT {PUBLIC_COLUMNS} FROM realmd.account a WHERE a.username LIKE %s ORDER BY a.id DESC LIMIT 200", (self.realm_id,"%"+query+"%"))

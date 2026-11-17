@@ -5,7 +5,7 @@ WoW 1.12.1 / vMaNGOS 账号与世界参数管理网页。FastAPI + Jinja2，原�
 ## 当前功能与边界
 
 - 注册、登录、查看自己角色、修改密码。
-- GM 查看账号与角色，向普通账号重置随机六位密码。
+- GM6 查看账号与角色，向普通账号重置随机六位密码，并在账号档案中提升／降低其他玩家的GM等级（0–6）。
 - 经 Unix socket 控制助手调整九项允许热更的服务端参数。
 - 不包含世界机器人人数配置、邮件赠送装备等后续设想的网页功能。
 - 使用现有 realmd/characters 表，不创建数据库或修改表结构；需要服务端已有 `account_access` 权限模型。
@@ -17,7 +17,7 @@ WoW 1.12.1 / vMaNGOS 账号与世界参数管理网页。FastAPI + Jinja2，原�
 
 1. 将 `.env.example` 复制为 `.env`，填写专用数据库账号、密码及随机至少32字符的签名密钥。
 2. 依照 [权限说明](web/README.md#mysql列权限) 由数据库管理员授予最小列权限；网页账号不得拥有DDL权限。
-3. 准备 `secrets/soap.json`，内容形如 `{"username":"YOUR_SERVICE_ACCOUNT","password":"YOUR_SERVICE_PASSWORD"}`。该账号须获准调用 `reload config`。文件不要提交到Git。
+3. 准备 `secrets/soap.json`，内容形如 `{"username":"YOUR_SERVICE_ACCOUNT","password":"YOUR_SERVICE_PASSWORD"}`。该账号须获准调用 `reload config` 和 `account set gmlevel`（控制台级权限；只由本地控制助手持有）。文件不要提交到Git。
 4. 将现有世界服务使用的真实配置目录挂载到 compose 的 `/etc/vmangos`。示例中的 `./server-config` 必须改为真实共享目录，不能只复制一份不会被游戏使用的配置；助手用原子替换写入，必须挂载目录。
 5. 创建 `run/control`、`backups` 目录；控制助手需要写入socket与备份目录。网页uid10001需要遍历并连接socket目录。
 6. 启动：`docker compose -f compose.example.yaml up -d --build`。
@@ -39,3 +39,9 @@ uv run pytest -q
 ## 来源与授权
 
 自研网页、控制助手及测试来自现有 wow-gm-control 工作目录。未发现该目录明确的项目级 LICENSE，当前导入不擅自追加许可证；公开前需项目所有者确认开源授权。第三方Python依赖保留各自许可证。
+
+## 账号GM权限管理
+
+GM6登录后进入玩家名册→查看档案→GM权限，选择0（普通玩家）或1–6，确认后保存。不能修改自己、受保护服务账号或控制台账号。若存在高于目标等级的全局授权，网页拒绝部分降级，需由服务器管理员先处理全局授权。服务端命令只修改当前Realm授权。
+
+请求由网页鉴权、CSRF校验和限流后，经受限Unix socket操作传入控制助手；助手仅构造经过账号格式和等级白名单校验的`account set gmlevel`命令。操作后回读现有account_access确认，不增加数据库写权限或表结构。服务端更新权限缓存，网页下一请求重新检查权限；已在线游戏角色建议重新登录确认。修改失败不声称成功。这里不新增审计表或数据库。

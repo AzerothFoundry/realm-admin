@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Root-owned, local-only hot-config control. No database or arbitrary commands."""
+"""Root-owned, local-only hot-config control. No database or arbitrary commands; narrowly validated account-level operation."""
 import base64,datetime,json,math,os,pathlib,socket,socketserver,stat,struct,subprocess,tempfile,urllib.request,xml.etree.ElementTree as ET,re
 CONFIG=pathlib.Path(os.environ.get('WOW_CONFIG','/etc/vmangos/mangosd.conf'))
 SOCKET=pathlib.Path(os.environ.get('CONTROL_SOCKET','/run/wow-gm/control.sock'))
@@ -44,20 +44,37 @@ def atomic_write(text):
  finally:
   if os.path.exists(name):os.unlink(name)
 
-def reload_config():
+def soap_command(command):
  credentials=json.loads(CREDENTIALS.read_text())
  token=base64.b64encode((credentials['username']+':'+credentials['password']).encode()).decode()
- body=b'<?xml version="1.0"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:MaNGOS"><SOAP-ENV:Body><ns1:executeCommand><command>reload config</command></ns1:executeCommand></SOAP-ENV:Body></SOAP-ENV:Envelope>'
- req=urllib.request.Request('http://127.0.0.1:7878/',data=body,headers={'Content-Type':'text/xml; charset=utf-8','SOAPAction':'urn:MaNGOS#executeCommand','Authorization':'Basic '+token})
- with urllib.request.urlopen(req,timeout=3) as response:raw=response.read(65536)
+ body=('<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><executeCommand xmlns="urn:MaNGOS"><command>'+command+'</command></executeCommand></SOAP-ENV:Body></SOAP-ENV:Envelope>').encode()
+ req=urllib.request.Request('http://127.0.0.1:7878/',data=body,headers={'Content-Type':'text/xml; charset=utf-8','Authorization':'Basic '+token})
+ try:
+  with urllib.request.urlopen(req,timeout=5) as response:raw=response.read(65536)
+ except Exception:raise RuntimeError('游戏控制接口未确认成功，请刷新账号档案核对后重试。') from None
  tree=ET.fromstring(raw)
- if any(node.tag.split('}')[-1]=='Fault' for node in tree.iter()):raise RuntimeError('游戏服务拒绝热更新。')
- text=' '.join(tree.itertext())
+ if any(node.tag.split('}')[-1]=='Fault' for node in tree.iter()):raise RuntimeError('游戏服务拒绝此操作。')
+ return ' '.join(tree.itertext()).strip()
+
+def reload_config():
+ text=soap_command('reload config')
  if 'World config settings reloaded.' not in text:raise RuntimeError('游戏服务未确认热更新成功。')
- return text.strip()
+ return text
+
+def set_gm_level(request):
+ if set(request)!={'action','username','level'}:raise ValueError('权限请求包含非法字段。')
+ name=request.get('username');level=request.get('level')
+ if not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9_]{1,16}',name):raise ValueError('账号名称无效。')
+ if type(level) is not int or not 0<=level<=6:raise ValueError('GM等级范围为0–6。')
+ protected={n.strip().upper() for n in os.getenv('PROTECTED_ACCOUNTS','__WEB_SERVICE,GMUI_SERVICE').split(',') if n.strip()}
+ if name.upper() in protected:raise ValueError('不能修改服务账号权限。')
+ text=soap_command(f'account set gmlevel {name.upper()} {level}')
+ if f'You change security level of account {name.upper()} to {level}.' not in text:raise RuntimeError('游戏服务未确认权限修改，请刷新核对。')
+ return {'ok':True,'level':level}
 
 def process(request):
  if not isinstance(request,dict):raise ValueError('请求须为JSON对象。')
+ if request.get('action')=='set_gm_level':return set_gm_level(request)
  old=CONFIG.read_text();current=read_settings(old)
  if request.get('action')=='get_config':
   try:

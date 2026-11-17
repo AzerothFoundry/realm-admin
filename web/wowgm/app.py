@@ -181,7 +181,27 @@ def create_app(db=None,control=None,settings=None):
     def account_detail(request:Request,account_id:int):
         current(request,gm=True);target=database.account(account_id)
         if not target:raise HTTPException(404,'账号不存在')
-        return page(request,'account.html',target=public(target),characters=database.characters(account_id),can_reset=int(target['gmlevel'])==0 and target['username'].upper() not in protected)
+        return page(request,'account.html',target=public(target),characters=database.characters(account_id),can_reset=int(target['gmlevel'])==0 and target['username'].upper() not in protected,can_edit_gm=target['id']!=request.state.user['id'] and target['username'].upper() not in protected and int(target['gmlevel'])<=6)
+    @app.post('/admin/accounts/{account_id}/gmlevel')
+    async def change_gm_level(request:Request,account_id:int):
+        actor=current(request,gm=True);data=await form(request)
+        limited(request,'gm-level',30,600,str(actor['id']))
+        if set(data)!={'csrf','gmlevel','confirm'} or data.get('confirm')!='yes':raise HTTPException(400,'请确认权限修改')
+        raw=str(data.get('gmlevel',''))
+        if raw not in {str(n) for n in range(7)}:raise HTTPException(400,'GM等级须为0–6的整数')
+        target=database.account(account_id)
+        if not target:raise HTTPException(404,'账号不存在')
+        if actor['id']==target['id']:raise HTTPException(403,'不能修改自己的GM权限，请由另一位管理员操作')
+        if target['username'].upper() in protected or int(target['gmlevel'])>6:raise HTTPException(403,'不能修改受保护的服务或控制台账号')
+        level=int(raw)
+        if database.global_gmlevel(account_id)>level:raise HTTPException(409,'该账号存在更高的全局授权，请先由服务器管理员处理全局权限')
+        if level!=int(target['gmlevel']):
+            try:controller.request({'action':'set_gm_level','username':auth.username(target['username']),'level':level})
+            except ControlError as e:return page(request,'error.html',503,message=str(e))
+        result=database.account(account_id)
+        if not result or int(result['gmlevel'])!=level:raise HTTPException(409,'权限回读与目标不一致，请检查是否有全局授权；未显示为修改成功')
+        return page(request,'account.html',target=public(result),characters=database.characters(account_id),can_reset=level==0 and result['username'].upper() not in protected,can_edit_gm=True,notice=f"{result['username']} 的GM等级已设为 {level}。已在线角色请重新登录游戏确认。")
+
     @app.post('/admin/accounts/{account_id}/reset')
     async def reset_password(request:Request,account_id:int):
         actor=current(request,gm=True);await form(request);limited(request,'reset-password',20,3600,str(actor['id']))
@@ -190,7 +210,7 @@ def create_app(db=None,control=None,settings=None):
         if int(target['gmlevel'])!=0 or target['username'].upper() in protected:raise HTTPException(403,'只能重置普通玩家账号，不能重置管理员或服务账号')
         generated=f'{secrets.randbelow(1000000):06d}';s,v=auth.credentials(target['username'],generated)
         if not database.set_password(account_id,s,v,ordinary_only=True,expected_v=target['v']):raise HTTPException(409,'目标账号信息已变化，重置未执行')
-        return page(request,'account.html',target=public(target),characters=database.characters(account_id),can_reset=True,reset_password=generated)
+        return page(request,'account.html',target=public(target),characters=database.characters(account_id),can_reset=True,can_edit_gm=target["id"]!=actor["id"],reset_password=generated)
     @app.get('/admin/settings')
     def settings_page(request:Request):
         current(request,gm=True)

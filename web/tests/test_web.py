@@ -25,6 +25,7 @@ class FakeDB:
         a=self.rows.get(uid)
         if not a or (ordinary_only and self.account(uid)['gmlevel']!=0) or (expected_v is not None and expected_v!=a['v']):return False
         a.update(s=s,v=v);return True
+    def global_gmlevel(self,uid):return max((level for account,level,realm in self.access if account==uid and realm==-1),default=0)
     def accounts(self,query=''):return [self.account(a['id']) for a in self.rows.values() if query.upper() in a['username']]
     def characters(self,uid):return [{'guid':1,'account':uid,'name':'旅人','race':1,'class':1,'level':60,'online':0,'map':0,'zone':12,'money':12500}] if uid==2 else []
 
@@ -34,11 +35,13 @@ class FakeControl:
         self.calls.append(deepcopy(payload))
         if self.fail:raise ControlError('控制服务暂时不可用')
         if payload['action']=='apply_config':self.values.update(payload['values'])
+        if payload['action']=='set_gm_level':
+            row=self.db.find(payload['username']);self.db.access=[a for a in self.db.access if not(a[0]==row['id'] and a[2]==self.db.realm_id)];self.db.access.append((row['id'],payload['level'],self.db.realm_id))
         return {'ok':True,'settings':deepcopy(self.values)}
 
 @pytest.fixture
 def env():
-    db=FakeDB();control=FakeControl();app=create_app(db,control,{'secret_key':'x'*48,'cookie_secure':False,'protected_accounts':'GMUI_SERVICE'})
+    db=FakeDB();control=FakeControl();control.db=db;app=create_app(db,control,{'secret_key':'x'*48,'cookie_secure':False,'protected_accounts':'GMUI_SERVICE'})
     with TestClient(app) as client:yield client,db,control,app
 
 def csrf(client,path='/login'):
@@ -201,3 +204,33 @@ def test_reset_access_grant_even_with_legacy_zero(env):
     login(c,'ADMIN')
     token=csrf(c,'/admin/accounts/2')
     assert c.post('/admin/accounts/2/reset',data={'csrf':token}).status_code==403
+
+def test_gm_level_roundtrip_and_self_protection(env):
+    c,db,control,_=env;login(c,'ADMIN')
+    token=csrf(c,'/admin/accounts/2')
+    for level in [6,2,0]:
+        r=c.post('/admin/accounts/2/gmlevel',data={'csrf':token,'gmlevel':str(level),'confirm':'yes'})
+        assert r.status_code==200 and db.account(2)['gmlevel']==level
+        assert control.calls[-1]=={'action':'set_gm_level','username':'PLAYER','level':level}
+    assert c.post('/admin/accounts/1/gmlevel',data={'csrf':token,'gmlevel':'0','confirm':'yes'}).status_code==403
+    assert c.post('/admin/accounts/3/gmlevel',data={'csrf':token,'gmlevel':'6','confirm':'yes'}).status_code==403
+
+def test_gm_level_denies_invalid_or_unconfirmed_and_normal_users(env):
+    c,db,control,_=env;login(c)
+    assert c.post('/admin/accounts/2/gmlevel',data={'csrf':csrf(c,'/me'),'gmlevel':'6','confirm':'yes'}).status_code==403
+    login(c,'ADMIN');token=csrf(c,'/admin/accounts/2')
+    for level in ['-1','7','6.0','6;account','bad']:
+        assert c.post('/admin/accounts/2/gmlevel',data={'csrf':token,'gmlevel':level,'confirm':'yes'}).status_code==400
+    assert c.post('/admin/accounts/2/gmlevel',data={'csrf':'wrong','gmlevel':'6','confirm':'yes'}).status_code==403
+    assert c.post('/admin/accounts/2/gmlevel',data={'csrf':token,'gmlevel':'6'}).status_code==400
+    assert not control.calls
+
+def test_gm_level_control_failure_never_claims_success(env):
+    c,db,control,_=env;login(c,'ADMIN');token=csrf(c,'/admin/accounts/2');control.fail=True
+    assert c.post('/admin/accounts/2/gmlevel',data={'csrf':token,'gmlevel':'6','confirm':'yes'}).status_code==503
+    assert db.account(2)['gmlevel']==0
+
+def test_global_grant_prevents_partial_demotion(env):
+    c,db,control,_=env;login(c,'ADMIN');db.access.append((2,6,-1))
+    r=c.post('/admin/accounts/2/gmlevel',data={'csrf':csrf(c,'/admin/accounts/2'),'gmlevel':'0','confirm':'yes'})
+    assert r.status_code==409 and not control.calls and db.account(2)['gmlevel']==6
